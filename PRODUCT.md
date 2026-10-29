@@ -26,6 +26,8 @@ The user selects a local video or grants browser camera access, sets line orient
 
 - Preserve the existing HOG detector and centroid tracker for the first web version.
 - Record sessions and crossing events in SQLite.
+- Retain uploaded source videos locally for reanalysis, and reuse completed results when source bytes, settings, and algorithm version match.
+- Let the user delete finished sessions and their saved data; remove a source video when no remaining session uses it.
 - Support uploaded videos and live browser camera analysis.
 - Show entries, exits, and cumulative occupancy; occupancy starts at zero and is calculated as entries minus exits, so it may be negative if people already present leave first.
 - The first web version runs on the user's computer; public deployment, authentication, and multi-user operation are outside the confirmed scope.

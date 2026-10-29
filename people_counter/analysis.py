@@ -1,13 +1,20 @@
 """Shared frame analysis for uploaded files and browser camera sessions."""
 
 from math import isfinite
+import os
 from pathlib import Path
+import shutil
+import subprocess
 from threading import Lock
+from uuid import uuid4
 
 from .__main__ import draw_overlay
 from .detection import HOGPersonDetector
 from .store import LineConfig, SessionStore
 from .tracking import PeopleCounter
+
+# Bump this when detection, counting, or rendered output changes.
+ANALYSIS_VERSION = "hog-centroid-v1"
 
 
 class FrameAnalyzer:
@@ -35,13 +42,51 @@ class AnalysisService:
         self.store = store
         self.data_dir = Path(data_dir)
         (self.data_dir / "uploads").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "sources").mkdir(parents=True, exist_ok=True)
         (self.data_dir / "outputs").mkdir(parents=True, exist_ok=True)
         self.latest_frames: dict[str, bytes] = {}
         self.active_camera: set[str] = set()
         self.lock = Lock()
+        self.video_lock = Lock()
 
     def output_path(self, session_id: str) -> Path:
         return self.data_dir / "outputs" / f"{session_id}.mp4"
+
+    def source_path(self, source_sha256: str, source_suffix: str) -> Path:
+        return self.data_dir / "sources" / f"{source_sha256}{source_suffix}"
+
+    def browser_video(self, session_id: str) -> Path:
+        """Make old and new OpenCV MP4 outputs playable in browsers."""
+        path = self.output_path(session_id)
+        with self.video_lock:
+            ffprobe = shutil.which("ffprobe")
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffprobe or not ffmpeg:
+                raise RuntimeError("FFmpeg and FFprobe are required to prepare browser playback")
+            probe = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                capture_output=True, text=True,
+            )
+            if probe.returncode != 0:
+                raise RuntimeError("Could not inspect the annotated video")
+            if probe.stdout.strip() == "h264":
+                return path
+            temporary = path.with_name(f"{path.stem}.{uuid4().hex}.mp4")
+            try:
+                result = subprocess.run(
+                    [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
+                     "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
+                     "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                     "-an", str(temporary)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0 or not temporary.is_file():
+                    raise RuntimeError("FFmpeg could not encode the video for browser playback")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return path
 
     def latest_frame(self, session_id: str) -> bytes | None:
         with self.lock:
@@ -98,6 +143,7 @@ class AnalysisService:
                 raise ValueError("The uploaded video has no readable frames")
             writer.release()
             writer = None
+            self.browser_video(session_id)
             self.store.set_status(session_id, "completed", output_available=True)
             completed = True
         except Exception as exc:
@@ -109,7 +155,6 @@ class AnalysisService:
                 writer.release()
             if not completed:
                 self.output_path(session_id).unlink(missing_ok=True)
-            source_path.unlink(missing_ok=True)
 
     def start_camera(self, session_id: str) -> FrameAnalyzer:
         session = self.store.get(session_id)

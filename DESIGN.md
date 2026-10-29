@@ -16,3 +16,5 @@ The dashboard is an operating surface for a local video analysis session. The an
 - Upload and camera modes share line controls. Direction copy changes with line orientation so the entry side is explicit before analysis.
 - Idle, queued, running, completed, and failed states each have visible status; controls are disabled while a session runs.
 - The chart is derived from stored crossing events. The table presents the same events for inspection without relying on color alone.
+- Completed uploads expose Replay result beside the preview. Changing line settings enables an explicit reanalysis action; saved results remain available in session history.
+- Each finished history item has a Delete action. A modal names the session and explains which data will be removed before the request is sent.

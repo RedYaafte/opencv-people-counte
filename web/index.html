@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#e9f0f2">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%230d7461'/%3E%3Cpath d='M5 20h30M20 5v30' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
   <title>People Flow · OpenCV People Counter</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
@@ -72,6 +73,7 @@
 
           <button id="start-button" class="primary-button" type="button" disabled>Analyze video <span aria-hidden="true">↗</span></button>
           <button id="stop-button" class="secondary-button" type="button" hidden>Stop camera</button>
+          <p id="notice-message" class="notice-message" role="status" hidden></p>
           <p id="error-message" class="error-message" role="alert" hidden></p>
         </aside>
 
@@ -98,6 +100,7 @@
           <div class="monitor-footer">
             <div class="progress-track" role="progressbar" aria-label="Video processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-fill"></span></div>
             <span id="progress-label">Ready when you are</span>
+            <button id="replay-button" class="replay-button" type="button" hidden>Replay result</button>
             <a id="download-link" class="download-link" href="#" download hidden>Download annotated video <span aria-hidden="true">↗</span></a>
           </div>
 
@@ -134,5 +137,15 @@
     </main>
     <footer class="site-footer"><span>OpenCV People Counter</span><span>Local analysis · No face recognition</span></footer>
   </div>
+  <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
+    <h2 id="delete-title">Delete this session?</h2>
+    <p id="delete-description">This permanently removes the session counts, crossing events, and annotated video. The uploaded original is also removed when no other session uses it.</p>
+    <p id="delete-session-name" class="delete-session-name"></p>
+    <p id="delete-error" class="error-message" role="alert" hidden></p>
+    <div class="delete-actions">
+      <button id="delete-cancel" class="dialog-cancel" type="button">Keep session</button>
+      <button id="delete-confirm" class="dialog-confirm" type="button">Delete session</button>
+    </div>
+  </dialog>
 </body>
 </html>

@@ -13,6 +13,7 @@ Count people entering and leaving an area as they cross a configurable line in a
 ## Requirements
 
 - Python 3.10 or newer
+- FFmpeg with `ffmpeg`, `ffprobe`, and the `libx264` encoder available on your PATH for web video playback
 - A video file, or a camera connected to the computer running the program
 
 ## Web dashboard
@@ -41,11 +42,17 @@ Start the local server:
 python -m uvicorn people_counter.web:app --host 127.0.0.1 --port 8000
 ```
 
-Open **http://127.0.0.1:8000**. Choose a video and set the line orientation, position, and entry direction before selecting **Analyze video**. The annotated preview, counts, and chart update during processing. When complete, you can play or download the annotated MP4. The video limit is 250 MB.
+Open **http://127.0.0.1:8000**. Choose a video and set the line orientation, position, and entry direction before selecting **Analyze video**. The annotated preview, counts, and chart update during processing. When complete, select **Replay result** to play the saved MP4 again without analyzing it, or download it. The video limit is 250 MB.
+
+The web dashboard converts annotated uploads to H.264 MP4 for browser playback. Existing saved MP4 files are converted automatically the first time they are opened after this update; their detection results and SQLite counts are reused.
+
+Select a completed upload from **Recent sessions** to replay it later. Change the line settings and select **Reanalyze with new settings** to create a new analysis of that source. Uploading the same file with the same settings and algorithm version reuses its existing result; it does not run detection again. Older sessions created before this feature can still be replayed, but require the original file to be uploaded again for reanalysis.
+
+Use **Delete** beside a recent session to remove its SQLite record, crossing events, and annotated video after confirming in the dialog. The uploaded original is deleted when no other session uses it. Active analyses must finish before they can be deleted.
 
 For **Live camera**, grant your browser permission and select **Start camera**. Select **Stop camera** to end the session. Camera processing speed depends on your CPU and video resolution; the app sends the next frame only after the previous frame is analyzed. Browser camera access works on `localhost` and `127.0.0.1`; a remote deployment requires HTTPS and additional security work.
 
-SQLite data and annotated web videos are stored under `data/`, which Git ignores. Uploaded source files are removed after processing. Camera sessions save counts and crossing events, but do not record video. Occupancy is entries minus exits from a starting value of zero, so it can become negative if someone already inside leaves first. This first version is intended for local, single-user use.
+SQLite data, annotated web videos, and uploaded source videos are stored under `data/`, which Git ignores. Source files are kept so line settings can be changed without uploading the video again. Delete `data/sources/` if you no longer want to retain those originals; replay of completed outputs still works, but reanalysis then requires another upload. Camera sessions save counts and crossing events, but do not record video. Occupancy is entries minus exits from a starting value of zero, so it can become negative if someone already inside leaves first. This first version is intended for local, single-user use.
 
 ## Command-line setup
 

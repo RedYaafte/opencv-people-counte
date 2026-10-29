@@ -47,7 +47,7 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertEqual((session["frames"], session["entries"], session["exits"]), (3, 1, 0))
             self.assertEqual([event["direction"] for event in store.events(session_id)], ["entry"])
             self.assertTrue(service.output_path(session_id).is_file())
-            self.assertFalse(source.exists())
+            self.assertTrue(source.exists())
 
     def test_camera_frames_update_counts_without_recording_video(self):
         with tempfile.TemporaryDirectory() as directory:

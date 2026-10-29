@@ -1,6 +1,7 @@
 """Local FastAPI interface for uploaded videos and browser camera analysis."""
 
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 from time import monotonic
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .analysis import AnalysisService
+from .analysis import ANALYSIS_VERSION, AnalysisService
 from .store import LineConfig, SessionStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,17 @@ def require_session(session_id: str) -> dict:
     return session
 
 
+def reusable_upload(source_sha256: str, config: LineConfig) -> dict | None:
+    for session in store.matching_uploads(source_sha256, config, ANALYSIS_VERSION):
+        if session["status"] == "completed" and session["output_available"] \
+                and service.output_path(session["id"]).is_file():
+            return session
+        if session["status"] in ("queued", "running") and session["source_suffix"] \
+                and service.source_path(source_sha256, session["source_suffix"]).is_file():
+            return session
+    return None
+
+
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse(ROOT / "web" / "index.html")
@@ -63,6 +75,23 @@ def session_detail(session_id: str):
     return session
 
 
+@app.delete("/api/sessions/{session_id}", status_code=204)
+def delete_session(session_id: str):
+    try:
+        deleted = store.delete(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session, source_unused = deleted
+    service.output_path(session_id).unlink(missing_ok=True)
+    if source_unused and session["source_suffix"]:
+        service.source_path(session["source_sha256"], session["source_suffix"]).unlink(missing_ok=True)
+    with service.lock:
+        service.latest_frames.pop(session_id, None)
+    return Response(status_code=204)
+
+
 @app.get("/api/sessions/{session_id}/frame")
 def session_frame(session_id: str):
     require_session(session_id)
@@ -78,6 +107,10 @@ def session_video(session_id: str):
     path = service.output_path(session_id)
     if not session["output_available"] or not path.is_file():
         raise HTTPException(status_code=404, detail="Annotated video is not ready")
+    try:
+        path = service.browser_video(session_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return FileResponse(path, media_type="video/mp4")
 
 
@@ -97,6 +130,7 @@ async def upload_video(
         raise HTTPException(status_code=415, detail="Upload an MP4, MOV, AVI, MKV, or WebM video")
     temporary_path = service.data_dir / "uploads" / f"{uuid4()}{suffix}"
     size = 0
+    hasher = hashlib.sha256()
     try:
         with temporary_path.open("wb") as target:
             async for chunk in request.stream():
@@ -104,14 +138,52 @@ async def upload_video(
                 if size > MAX_UPLOAD_BYTES:
                     raise HTTPException(status_code=413, detail="Video exceeds the 250 MB limit")
                 target.write(chunk)
+                hasher.update(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="The uploaded video is empty")
-        session_id = store.create("upload", source_name, config)
-        background_tasks.add_task(service.process_upload, session_id, temporary_path)
+        source_sha256 = hasher.hexdigest()
+        source_path = service.source_path(source_sha256, suffix)
+        reusable = reusable_upload(source_sha256, config)
+        if reusable:
+            previous_source = service.source_path(source_sha256, reusable["source_suffix"])
+            if previous_source.is_file():
+                temporary_path.unlink(missing_ok=True)
+            else:
+                if source_path.is_file():
+                    temporary_path.unlink(missing_ok=True)
+                else:
+                    os.replace(temporary_path, source_path)
+                store.update_source_suffix(source_sha256, suffix)
+            return {**reusable, "reused": True}
+        if source_path.is_file():
+            temporary_path.unlink()
+        else:
+            os.replace(temporary_path, source_path)
+        session_id = store.create("upload", source_name, config, source_sha256, suffix,
+                                  ANALYSIS_VERSION)
+        background_tasks.add_task(service.process_upload, session_id, source_path)
         return store.get(session_id)
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+@app.post("/api/sessions/{session_id}/reanalyze", status_code=202)
+def reanalyze_upload(session_id: str, request: CameraRequest, background_tasks: BackgroundTasks):
+    original = require_session(session_id)
+    if original["source_type"] != "upload" or not original["source_sha256"] or not original["source_suffix"]:
+        raise HTTPException(status_code=409, detail="Upload the original video to analyze it again")
+    source_path = service.source_path(original["source_sha256"], original["source_suffix"])
+    if not source_path.is_file():
+        raise HTTPException(status_code=409, detail="Original video is unavailable; upload it again")
+    config = validate_config(request.orientation, request.line_position, request.entry_direction)
+    reusable = reusable_upload(original["source_sha256"], config)
+    if reusable:
+        return {**reusable, "reused": True}
+    new_id = store.create("upload", original["source_name"], config,
+                          original["source_sha256"], original["source_suffix"], ANALYSIS_VERSION)
+    background_tasks.add_task(service.process_upload, new_id, source_path)
+    return store.get(new_id)
 
 
 @app.post("/api/sessions/camera", status_code=201)

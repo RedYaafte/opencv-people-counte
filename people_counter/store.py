@@ -39,6 +39,9 @@ class SessionStore:
                     id TEXT PRIMARY KEY,
                     source_type TEXT NOT NULL,
                     source_name TEXT NOT NULL,
+                    source_sha256 TEXT,
+                    source_suffix TEXT,
+                    analysis_version TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     finished_at TEXT,
@@ -64,6 +67,16 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS events_session_time ON events(session_id, time_seconds);
             """)
 
+            # Existing local databases predate source reuse; keep their sessions.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}
+            for name in ("source_sha256", "source_suffix", "analysis_version"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE sessions ADD COLUMN {name} TEXT")
+            db.execute("""
+                CREATE INDEX IF NOT EXISTS sessions_source_config
+                ON sessions(source_sha256, analysis_version, orientation, line_position, entry_direction)
+            """)
+
     @contextmanager
     def connection(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -75,17 +88,21 @@ class SessionStore:
         finally:
             db.close()
 
-    def create(self, source_type: str, source_name: str, config: LineConfig) -> str:
+    def create(self, source_type: str, source_name: str, config: LineConfig,
+               source_sha256: str | None = None, source_suffix: str | None = None,
+               analysis_version: str | None = None) -> str:
         if source_type not in ("upload", "camera"):
             raise ValueError("Invalid source type")
         session_id = str(uuid4())
         with self.connection() as db:
             db.execute("""
-                INSERT INTO sessions (id, source_type, source_name, status, created_at,
+                INSERT INTO sessions (id, source_type, source_name, source_sha256,
+                                      source_suffix, analysis_version, status, created_at,
                                       orientation, line_position, entry_direction)
-                VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)
-            """, (session_id, source_type, source_name, utc_now(), config.orientation,
-                  config.line_position, config.entry_direction))
+                VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+            """, (session_id, source_type, source_name, source_sha256, source_suffix,
+                  analysis_version, utc_now(), config.orientation, config.line_position,
+                  config.entry_direction))
         return session_id
 
     def get(self, session_id: str) -> dict | None:
@@ -103,6 +120,28 @@ class SessionStore:
             rows = db.execute("SELECT id FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)).fetchall()
         return [self.get(row["id"]) for row in rows]
 
+    def matching_uploads(self, source_sha256: str, config: LineConfig,
+                         analysis_version: str) -> list[dict]:
+        """Find prior analyses of the same bytes, settings, and algorithm."""
+        with self.connection() as db:
+            rows = db.execute("""
+                SELECT id FROM sessions
+                WHERE source_type = 'upload' AND source_sha256 = ?
+                  AND analysis_version = ? AND orientation = ?
+                  AND line_position = ? AND entry_direction = ?
+                  AND status IN ('queued', 'running', 'completed')
+                ORDER BY CASE status WHEN 'completed' THEN 0 ELSE 1 END,
+                         created_at DESC, rowid DESC
+            """, (source_sha256, analysis_version, config.orientation,
+                  config.line_position, config.entry_direction)).fetchall()
+        return [self.get(row["id"]) for row in rows]
+
+    def update_source_suffix(self, source_sha256: str, source_suffix: str) -> None:
+        """Reconnect prior sessions when their source is uploaded again."""
+        with self.connection() as db:
+            db.execute("UPDATE sessions SET source_suffix = ? WHERE source_sha256 = ?",
+                       (source_suffix, source_sha256))
+
     def events(self, session_id: str) -> list[dict]:
         with self.connection() as db:
             rows = db.execute("""
@@ -110,6 +149,26 @@ class SessionStore:
                 WHERE session_id = ? ORDER BY id
             """, (session_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def delete(self, session_id: str) -> tuple[dict, bool] | None:
+        """Delete a finished session and report whether its source is now unused."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            session = dict(row)
+            if session["status"] in ("queued", "running"):
+                raise ValueError("Stop the analysis before deleting this session")
+            db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            source_unused = False
+            if session["source_sha256"]:
+                remaining = db.execute(
+                    "SELECT 1 FROM sessions WHERE source_sha256 = ? LIMIT 1",
+                    (session["source_sha256"],),
+                ).fetchone()
+                source_unused = remaining is None
+            return session, source_unused
 
     def set_status(self, session_id: str, status: str, error: str | None = None,
                    output_available: bool = False) -> None:

@@ -5,7 +5,8 @@ const ui = {
   file: $("video-file"), fileName: $("file-name"), orientation: $("orientation"),
   position: $("line-position"), positionValue: $("position-value"),
   entryDirection: $("entry-direction"), directionHint: $("direction-hint"),
-  start: $("start-button"), stop: $("stop-button"), error: $("error-message"),
+  start: $("start-button"), stop: $("stop-button"), replay: $("replay-button"),
+  notice: $("notice-message"), error: $("error-message"),
   source: $("source-description"), status: $("status-pill"), stageEmpty: $("stage-empty"),
   image: $("analysis-image"), camera: $("camera-preview"), video: $("result-video"),
   canvas: $("capture-canvas"), progress: $("progress-fill"),
@@ -15,6 +16,9 @@ const ui = {
   eventsBody: $("events-body"), eventCount: $("event-count"),
   sessions: $("session-list"), sideBefore: $("side-before"), sideAfter: $("side-after"),
   sampleLine: document.querySelector(".sample-line"),
+  deleteDialog: $("delete-dialog"), deleteName: $("delete-session-name"),
+  deleteError: $("delete-error"), deleteCancel: $("delete-cancel"),
+  deleteConfirm: $("delete-confirm"),
 };
 
 let mode = "upload";
@@ -26,6 +30,7 @@ let cameraStream = null;
 let cameraSocket = null;
 let cameraRunning = false;
 let frameUrl = null;
+let pendingDelete = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, options);
@@ -48,6 +53,16 @@ function clearError() {
   ui.error.hidden = true;
 }
 
+function showNotice(message) {
+  ui.notice.textContent = message;
+  ui.notice.hidden = false;
+}
+
+function clearNotice() {
+  ui.notice.textContent = "";
+  ui.notice.hidden = true;
+}
+
 function isActive() {
   return currentSession && ["queued", "running"].includes(currentSession.status);
 }
@@ -60,6 +75,19 @@ function config() {
   };
 }
 
+function settingsChanged() {
+  if (!currentSession || currentSession.source_type !== "upload") return false;
+  const selected = config();
+  return selected.orientation !== currentSession.orientation
+    || selected.line_position !== currentSession.line_position
+    || selected.entry_direction !== currentSession.entry_direction;
+}
+
+function canReanalyze() {
+  return mode === "upload" && !ui.file.files.length && currentSession?.status === "completed"
+    && Boolean(currentSession.source_sha256) && settingsChanged();
+}
+
 function updateDirectionLabels() {
   const vertical = ui.orientation.value === "vertical";
   const reverse = ui.entryDirection.value === "reverse";
@@ -70,20 +98,29 @@ function updateDirectionLabels() {
   ui.sideAfter.textContent = reverse ? "EXIT SIDE" : "ENTRY SIDE";
   ui.sampleLine.classList.toggle("is-vertical", vertical);
   ui.directionHint.textContent = "The opposite direction counts as an exit.";
+  refreshControls();
 }
 
 function refreshControls() {
   const busy = Boolean(isActive()) || cameraRunning;
+  const needsOriginal = mode === "upload" && !ui.file.files.length
+    && currentSession?.source_type === "upload" && currentSession.status === "completed"
+    && settingsChanged() && !currentSession.source_sha256;
   ui.uploadTab.disabled = busy;
   ui.cameraTab.disabled = busy;
   ui.file.disabled = busy;
   ui.orientation.disabled = busy;
   ui.position.disabled = busy;
   ui.entryDirection.disabled = busy;
-  ui.start.disabled = busy || (mode === "upload" && !ui.file.files.length);
-  ui.start.textContent = mode === "upload" ? "Analyze video" : "Start camera";
+  ui.start.disabled = busy || (mode === "upload" && !ui.file.files.length && !canReanalyze());
+  ui.start.textContent = mode === "camera" ? "Start camera"
+    : canReanalyze() ? "Reanalyze with new settings"
+      : needsOriginal ? "Upload original video" : "Analyze video";
   ui.stop.hidden = !cameraRunning;
-  for (const button of ui.sessions.querySelectorAll("button")) button.disabled = busy;
+  ui.replay.hidden = !(currentSession?.source_type === "upload" && currentSession.output_available);
+  for (const button of ui.sessions.querySelectorAll("button")) {
+    button.disabled = busy || (button.classList.contains("history-delete") && button.dataset.active === "true");
+  }
 }
 
 function setMode(next) {
@@ -295,8 +332,11 @@ async function loadRecent() {
     }
     for (const session of sessions) {
       const item = document.createElement("li");
+      const row = document.createElement("div");
+      row.className = "history-row";
       const button = document.createElement("button");
       button.type = "button";
+      button.className = "history-select";
       button.classList.toggle("is-current", session.id === currentSession?.id);
       button.disabled = Boolean(isActive()) || cameraRunning;
       const title = document.createElement("strong");
@@ -305,7 +345,16 @@ async function loadRecent() {
       meta.textContent = `${new Date(session.created_at).toLocaleString()} · ${session.entries} in / ${session.exits} out`;
       button.append(title, meta);
       button.addEventListener("click", () => selectSession(session.id));
-      item.append(button);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "history-delete";
+      remove.textContent = "Delete";
+      remove.setAttribute("aria-label", `Delete session ${session.source_name}`);
+      remove.dataset.active = String(["queued", "running"].includes(session.status));
+      remove.disabled = Boolean(isActive()) || cameraRunning || ["queued", "running"].includes(session.status);
+      remove.addEventListener("click", () => confirmDelete(session));
+      row.append(button, remove);
+      item.append(row);
       ui.sessions.append(item);
     }
     return sessions;
@@ -315,16 +364,95 @@ async function loadRecent() {
   }
 }
 
+function confirmDelete(session) {
+  if (isActive() || cameraRunning || ["queued", "running"].includes(session.status)) return;
+  pendingDelete = session;
+  ui.deleteName.textContent = session.source_name;
+  ui.deleteError.hidden = true;
+  ui.deleteError.textContent = "";
+  ui.deleteDialog.showModal();
+}
+
+function resetSelectedSession() {
+  clearInterval(pollingTimer);
+  pollingTimer = null;
+  currentSession = null;
+  currentEvents = [];
+  if (frameUrl) { URL.revokeObjectURL(frameUrl); frameUrl = null; }
+  ui.video.pause();
+  ui.video.removeAttribute("src");
+  ui.video.dataset.sessionId = "";
+  ui.video.load();
+  ui.image.removeAttribute("src");
+  ui.file.value = "";
+  ui.fileName.textContent = "Choose a video file";
+  ui.source.textContent = "No source selected";
+  ui.download.hidden = true;
+  ui.replay.hidden = true;
+  ui.entries.textContent = "0";
+  ui.exits.textContent = "0";
+  ui.occupancy.textContent = "0";
+  ui.time.textContent = "00:00 elapsed";
+  ui.progress.style.width = "0%";
+  ui.progressTrack.setAttribute("aria-valuenow", "0");
+  ui.progressLabel.textContent = "Ready when you are";
+  setStatus("idle");
+  showStage(ui.stageEmpty);
+  renderEvents([]);
+  renderChart();
+  refreshControls();
+}
+
+async function deletePendingSession() {
+  if (!pendingDelete) return;
+  const session = pendingDelete;
+  const videoWasSelected = currentSession?.id === session.id && Boolean(ui.video.getAttribute("src"));
+  ui.deleteConfirm.disabled = true;
+  ui.deleteCancel.disabled = true;
+  ui.deleteConfirm.textContent = "Deleting…";
+  try {
+    if (videoWasSelected) {
+      ui.video.pause();
+      ui.video.removeAttribute("src");
+      ui.video.load();
+    }
+    await api(`/api/sessions/${session.id}`, { method: "DELETE" });
+    pendingDelete = null;
+    ui.deleteDialog.close();
+    if (currentSession?.id === session.id) resetSelectedSession();
+    const sessions = await loadRecent();
+    if (!currentSession && sessions[0]) await selectSession(sessions[0].id);
+    showNotice("Session and its stored data were deleted.");
+    clearError();
+  } catch (error) {
+    if (videoWasSelected) ui.video.src = `/api/sessions/${session.id}/video`;
+    ui.deleteError.textContent = `Could not delete session: ${error.message}`;
+    ui.deleteError.hidden = false;
+  } finally {
+    ui.deleteConfirm.disabled = false;
+    ui.deleteCancel.disabled = false;
+    ui.deleteConfirm.textContent = "Delete session";
+  }
+}
+
 async function selectSession(id) {
   if (isActive() || cameraRunning) return;
   clearError();
+  clearNotice();
   if (frameUrl) { URL.revokeObjectURL(frameUrl); frameUrl = null; }
   ui.video.removeAttribute("src");
   ui.video.dataset.sessionId = "";
   showStage(ui.stageEmpty);
   try {
     const session = await api(`/api/sessions/${id}`);
+    setMode(session.source_type === "camera" ? "camera" : "upload");
+    ui.file.value = "";
+    ui.fileName.textContent = "Choose a video file";
+    ui.orientation.value = session.orientation;
+    ui.position.value = String(Math.round(session.line_position * 100));
+    ui.entryDirection.value = session.entry_direction;
     currentSession = session;
+    updateDirectionLabels();
     updateSession(session, session.events);
     if (session.source_type === "camera") await fetchPreview(id);
     if (["queued", "running"].includes(session.status)) beginPolling();
@@ -334,9 +462,33 @@ async function selectSession(id) {
   }
 }
 
+async function activateUploadSession(response) {
+  ui.file.value = "";
+  ui.fileName.textContent = "Choose another video file";
+  if (response.reused) {
+    const session = await api(`/api/sessions/${response.id}`);
+    currentSession = session;
+    updateSession(session, session.events);
+    showStage(session.output_available ? ui.video : ui.stageEmpty);
+    showNotice(session.output_available
+      ? "Saved result reused. No new analysis was run."
+      : "This video is already being analyzed in another session.");
+    if (["queued", "running"].includes(session.status)) beginPolling();
+  } else {
+    currentSession = response;
+    currentEvents = [];
+    showStage(ui.stageEmpty);
+    updateSession(response, []);
+    beginPolling();
+  }
+  await loadRecent();
+}
+
 async function startUpload() {
   if (!ui.file.files.length) return;
   clearError();
+  clearNotice();
+  const previous = currentSession;
   ui.start.disabled = true;
   ui.start.textContent = "Uploading…";
   ui.source.textContent = ui.file.files[0].name;
@@ -344,18 +496,48 @@ async function startUpload() {
   const params = new URLSearchParams({ filename: ui.file.files[0].name, ...config() });
   try {
     const session = await api(`/api/sessions/upload?${params}`, { method: "POST", body: ui.file.files[0] });
-    currentSession = session;
-    currentEvents = [];
-    showStage(ui.stageEmpty);
-    updateSession(session, []);
-    await loadRecent();
-    beginPolling();
+    await activateUploadSession(session);
   } catch (error) {
-    setStatus("idle");
+    setStatus(previous?.status || "idle");
+    ui.source.textContent = previous?.source_name || "No source selected";
     showError(`Upload failed: ${error.message}`);
   } finally {
     refreshControls();
   }
+}
+
+async function startReanalysis() {
+  if (!canReanalyze()) return;
+  clearError();
+  clearNotice();
+  ui.start.disabled = true;
+  ui.start.textContent = "Preparing analysis…";
+  try {
+    const session = await api(`/api/sessions/${currentSession.id}/reanalyze`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config()),
+    });
+    await activateUploadSession(session);
+  } catch (error) {
+    showError(`Could not reanalyze video: ${error.message}`);
+  } finally {
+    refreshControls();
+  }
+}
+
+function replayResult() {
+  if (!currentSession?.output_available || currentSession.source_type !== "upload") return;
+  clearError();
+  if (ui.video.dataset.sessionId !== currentSession.id) {
+    ui.video.src = `/api/sessions/${currentSession.id}/video`;
+    ui.video.dataset.sessionId = currentSession.id;
+  }
+  if (ui.video.error) ui.video.load();
+  showStage(ui.video);
+  ui.video.currentTime = 0;
+  ui.video.play().catch(() => showError("Playback could not start. Use the video controls to try again."));
+  showNotice(settingsChanged()
+    ? "Playing the saved result with its original line. Reanalyze to apply your changes."
+    : "Playing the saved result. No analysis was run.");
 }
 
 function stopCamera() {
@@ -392,6 +574,7 @@ function sendCameraFrame() {
 
 async function startCamera() {
   clearError();
+  clearNotice();
   ui.start.disabled = true;
   ui.start.textContent = "Opening camera…";
   try {
@@ -462,8 +645,19 @@ ui.file.addEventListener("change", () => {
 ui.orientation.addEventListener("change", updateDirectionLabels);
 ui.entryDirection.addEventListener("change", updateDirectionLabels);
 ui.position.addEventListener("input", updateDirectionLabels);
-ui.start.addEventListener("click", () => mode === "upload" ? startUpload() : startCamera());
+ui.start.addEventListener("click", () => {
+  if (mode === "camera") startCamera();
+  else if (ui.file.files.length) startUpload();
+  else startReanalysis();
+});
 ui.stop.addEventListener("click", stopCamera);
+ui.replay.addEventListener("click", replayResult);
+ui.deleteCancel.addEventListener("click", () => ui.deleteDialog.close());
+ui.deleteConfirm.addEventListener("click", deletePendingSession);
+ui.deleteDialog.addEventListener("close", () => { pendingDelete = null; });
+ui.deleteDialog.addEventListener("cancel", (event) => {
+  if (ui.deleteConfirm.disabled) event.preventDefault();
+});
 window.addEventListener("beforeunload", () => {
   if (cameraRunning) stopCamera();
   if (frameUrl) URL.revokeObjectURL(frameUrl);
