@@ -26,14 +26,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def draw_overlay(frame, counter: PeopleCounter, cv2) -> None:
+def draw_overlay(frame, counter: PeopleCounter, cv2, language: str = "es") -> None:
     height, width = frame.shape[:2]
     location = round((height if counter.orientation == "horizontal" else width) * counter.line_position)
     start, end = ((0, location), (width, location)) if counter.orientation == "horizontal" else ((location, 0), (location, height))
     cv2.line(frame, start, end, (0, 220, 255), 2)
 
-    def draw_side_label(label: str, center: tuple[int, int]) -> None:
-        color = ENTRY_COLOR if label == "ENTRADA" else EXIT_COLOR
+    def draw_side_label(label: str, color: tuple[int, int, int], center: tuple[int, int]) -> None:
         font = cv2.FONT_HERSHEY_SIMPLEX
         text_size, baseline = cv2.getTextSize(label, font, 0.65, 2)
         text_width, text_height = text_size
@@ -42,14 +41,18 @@ def draw_overlay(frame, counter: PeopleCounter, cv2) -> None:
         cv2.rectangle(frame, (x - 4, y - text_height - 4), (x + text_width + 4, y + baseline + 4), (25, 25, 25), -1)
         cv2.putText(frame, label, (x, y), font, 0.65, color, 2)
 
-    negative_label = "SALIDA" if counter.entry_direction == "forward" else "ENTRADA"
-    positive_label = "ENTRADA" if counter.entry_direction == "forward" else "SALIDA"
+    entry_label, exit_label = ("ENTRY", "EXIT") if language == "en" else ("ENTRADA", "SALIDA")
+    negative_is_entry = counter.entry_direction == "reverse"
+    negative_label = entry_label if negative_is_entry else exit_label
+    positive_label = exit_label if negative_is_entry else entry_label
+    negative_color = ENTRY_COLOR if negative_is_entry else EXIT_COLOR
+    positive_color = EXIT_COLOR if negative_is_entry else ENTRY_COLOR
     if counter.orientation == "horizontal":
-        draw_side_label(negative_label, (width // 2, location // 2))
-        draw_side_label(positive_label, (width // 2, (location + height) // 2))
+        draw_side_label(negative_label, negative_color, (width // 2, location // 2))
+        draw_side_label(positive_label, positive_color, (width // 2, (location + height) // 2))
     else:
-        draw_side_label(negative_label, (location // 2, height // 2))
-        draw_side_label(positive_label, ((location + width) // 2, height // 2))
+        draw_side_label(negative_label, negative_color, (location // 2, height // 2))
+        draw_side_label(positive_label, positive_color, ((location + width) // 2, height // 2))
 
     for track in counter.tracks.values():
         if track.missed:
