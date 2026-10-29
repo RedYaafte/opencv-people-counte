@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#e9f0f2">
+  <title>People Flow · OpenCV People Counter</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="People Flow home">
+        <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M5 20h30M20 5v30"/><path d="m27 13 7 7-7 7"/></svg>
+        <span>PEOPLE FLOW</span>
+      </a>
+      <span class="environment"><span class="environment-dot"></span> Local workspace</span>
+    </header>
+
+    <main>
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <h1 id="page-title">See every crossing.</h1>
+          <p>Analyze a video or your browser camera. Follow entries, exits, and occupancy as they happen.</p>
+        </div>
+        <div class="heading-note">OpenCV · HOG detection · SQLite history</div>
+      </section>
+
+      <div class="workspace">
+        <aside class="controls" aria-labelledby="source-heading">
+          <h2 id="source-heading">Source & setup</h2>
+          <p class="section-intro">Choose a source, place the counting line, then start a session.</p>
+
+          <div class="tabs" role="tablist" aria-label="Video source">
+            <button class="tab is-selected" id="tab-upload" role="tab" aria-selected="true" aria-controls="panel-upload" type="button">Upload video</button>
+            <button class="tab" id="tab-camera" role="tab" aria-selected="false" aria-controls="panel-camera" type="button">Live camera</button>
+          </div>
+
+          <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload">
+            <label class="file-drop" for="video-file">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+              <strong id="file-name">Choose a video file</strong>
+              <span>MP4, MOV, AVI, MKV or WebM · up to 250 MB</span>
+            </label>
+            <input id="video-file" type="file" accept=".mp4,.mov,.avi,.mkv,.webm,video/*">
+          </div>
+          <div id="panel-camera" role="tabpanel" aria-labelledby="tab-camera" hidden>
+            <p class="camera-note">Your browser will ask for camera access. Processing runs on this computer; only crossing events are saved in SQLite.</p>
+          </div>
+
+          <div class="control-group">
+            <label for="orientation">Line orientation</label>
+            <select id="orientation">
+              <option value="horizontal">Horizontal</option>
+              <option value="vertical">Vertical</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <div class="label-row"><label for="line-position">Line position</label><output id="position-value" for="line-position">50%</output></div>
+            <input id="line-position" type="range" min="5" max="95" value="50" step="1">
+            <div class="range-labels"><span>Start</span><span>End</span></div>
+          </div>
+          <div class="control-group">
+            <label for="entry-direction">Count as entry</label>
+            <select id="entry-direction">
+              <option value="forward">Top → bottom</option>
+              <option value="reverse">Bottom → top</option>
+            </select>
+            <p id="direction-hint" class="field-hint">The opposite direction counts as an exit.</p>
+          </div>
+
+          <button id="start-button" class="primary-button" type="button" disabled>Analyze video <span aria-hidden="true">↗</span></button>
+          <button id="stop-button" class="secondary-button" type="button" hidden>Stop camera</button>
+          <p id="error-message" class="error-message" role="alert" hidden></p>
+        </aside>
+
+        <section class="monitor" aria-labelledby="monitor-heading">
+          <div class="monitor-heading">
+            <div>
+              <h2 id="monitor-heading">Analysis monitor</h2>
+              <p id="source-description">No source selected</p>
+            </div>
+            <span id="status-pill" class="status-pill" data-status="idle" role="status" aria-live="polite">Idle</span>
+          </div>
+
+          <div class="video-stage">
+            <div id="stage-empty" class="stage-empty">
+              <div class="sample-line"><span id="side-before">EXIT SIDE</span><i></i><span id="side-after">ENTRY SIDE</span></div>
+              <p>Your annotated feed will appear here.</p>
+            </div>
+            <img id="analysis-image" src="/static/preview.svg" alt="Annotated analysis frame" hidden>
+            <video id="camera-preview" autoplay muted playsinline hidden></video>
+            <video id="result-video" controls playsinline hidden></video>
+            <canvas id="capture-canvas" hidden></canvas>
+          </div>
+
+          <div class="monitor-footer">
+            <div class="progress-track" role="progressbar" aria-label="Video processing progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-fill"></span></div>
+            <span id="progress-label">Ready when you are</span>
+            <a id="download-link" class="download-link" href="#" download hidden>Download annotated video <span aria-hidden="true">↗</span></a>
+          </div>
+
+          <div class="metrics" aria-label="Current counts">
+            <div class="metric"><span class="metric-label"><i class="key entry"></i> Entries</span><strong id="entries-value">0</strong></div>
+            <div class="metric"><span class="metric-label"><i class="key exit"></i> Exits</span><strong id="exits-value">0</strong></div>
+            <div class="metric"><span class="metric-label"><i class="key occupancy"></i> Occupancy</span><strong id="occupancy-value">0</strong></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="results" aria-labelledby="progress-heading">
+        <div class="section-heading">
+          <div><h2 id="progress-heading">Flow over time</h2><p>Cumulative counts from the selected session. Occupancy starts at zero.</p></div>
+          <span id="session-time" class="session-time">00:00 elapsed</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="flow-chart" height="260" role="img" aria-label="Chart of cumulative entries, exits, and occupancy over time"></canvas>
+          <div class="chart-legend" aria-hidden="true"><span><i class="key entry"></i> Entries</span><span><i class="key exit"></i> Exits</span><span><i class="key occupancy"></i> Occupancy</span></div>
+        </div>
+        <div class="results-bottom">
+          <div class="event-section">
+            <h3>Crossing events <span id="event-count">0</span></h3>
+            <div class="table-scroll">
+              <table><thead><tr><th scope="col">Time</th><th scope="col">Track</th><th scope="col">Direction</th></tr></thead><tbody id="events-body"><tr><td colspan="3" class="empty-cell">Start an analysis to see events.</td></tr></tbody></table>
+            </div>
+          </div>
+          <div class="history-section">
+            <h3>Recent sessions</h3>
+            <ul id="session-list"><li class="history-empty">No sessions yet.</li></ul>
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer"><span>OpenCV People Counter</span><span>Local analysis · No face recognition</span></footer>
+  </div>
+</body>
+</html>
