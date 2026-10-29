@@ -24,6 +24,8 @@ dist/
 # Local footage, generated results, and future databases
 outputs/
 data/
+*.sqlite3-shm
+*.sqlite3-wal
 videos/
 *.mp4
 *.avi
