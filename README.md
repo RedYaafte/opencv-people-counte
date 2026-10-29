@@ -1,20 +1,53 @@
 # OpenCV People Counter
 
-Count people entering and leaving an area as they cross a configurable line in a video or local camera feed. The application saves an annotated MP4 and a CSV of crossing events. It runs from the command line; a web interface is not included yet.
+Count people entering and leaving an area as they cross a configurable line in a video or camera feed. Use the local web dashboard for uploaded videos, browser camera analysis, SQLite session history, and a live progress chart. The original command-line tool remains available.
 
 ## Features
 
 - Person detection with OpenCV's built-in HOG/SVM detector; no model download is required.
 - Centroid tracking and directional line-crossing counts.
-- On-video **ENTRADA** and **SALIDA** side labels, track IDs, and color-coded boxes: cyan before a crossing, green after an entry, and red after an exit.
-- A CSV event log with timestamp, frame number, track ID, and direction.
+- On-video direction labels (**ENTRY/EXIT** in the web dashboard, **ENTRADA/SALIDA** in the CLI), track IDs, and color-coded boxes: cyan before a crossing, green after an entry, and red after an exit.
+- CLI export of a CSV event log with timestamp, frame number, track ID, and direction.
+- A local FastAPI dashboard with uploaded video preview, browser camera processing, session history, and cumulative entries, exits, and occupancy.
 
 ## Requirements
 
 - Python 3.10 or newer
 - A video file, or a camera connected to the computer running the program
 
-## Quick start
+## Web dashboard
+
+Create a virtual environment from the repository root and install the web dependencies:
+
+**Linux/macOS:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-web.txt
+```
+
+**Windows (PowerShell):**
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-web.txt
+```
+
+Start the local server:
+
+```bash
+python -m uvicorn people_counter.web:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://127.0.0.1:8000**. Choose a video and set the line orientation, position, and entry direction before selecting **Analyze video**. The annotated preview, counts, and chart update during processing. When complete, you can play or download the annotated MP4. The video limit is 250 MB.
+
+For **Live camera**, grant your browser permission and select **Start camera**. Select **Stop camera** to end the session. Camera processing speed depends on your CPU and video resolution; the app sends the next frame only after the previous frame is analyzed. Browser camera access works on `localhost` and `127.0.0.1`; a remote deployment requires HTTPS and additional security work.
+
+SQLite data and annotated web videos are stored under `data/`, which Git ignores. Uploaded source files are removed after processing. Camera sessions save counts and crossing events, but do not record video. Occupancy is entries minus exits from a starting value of zero, so it can become negative if someone already inside leaves first. This first version is intended for local, single-user use.
+
+## Command-line setup
 
 From the repository root, create a virtual environment and install dependencies.
 
